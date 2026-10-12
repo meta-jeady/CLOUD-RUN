@@ -1,14 +1,9 @@
 import os
 import re
-import json
-import base64
-import msgpack
 import asyncio
 import threading
-from io import BytesIO
 from flask import Flask
-from Crypto.Cipher import AES
-from telegram import Update, InputFile
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ==================== CONFIG ====================
@@ -19,84 +14,72 @@ PORT = 443
 SNI = "crashlyticsreports-pa.googleapis.com"
 PATH = "/@kcorp237"
 REMARK = "@KCORP-TECH"
-KEY_256 = b"$B&E)H@McQfThWmZq4t7w!z%C*F-JaNd"
-KEY_192 = b"F)J@NcRfUjXn2r4u7x!A%D*G"
-IV = bytes.fromhex("232e39185523184a5723586242200e05")
 # ================================================
 
-# --- Flask pour Render (évite le Time Out) ---
 flask_app = Flask(__name__)
 @flask_app.route('/')
 def home():
-    return "KCORP Bot is Live"
+    return "KCORP Bot Live"
+
 def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
-def aes_encrypt(data: bytes, key: bytes) -> bytes:
-    cipher = AES.new(key, AES.MODE_CFB, IV, segment_size=128)
-    return cipher.encrypt(data)
-
 def extraire_host(texte: str) -> str | None:
-    texte = texte.strip()
-    match = re.search(r"([a-z0-9\-]+\.[a-z0-9\-]+\.run\.app)", texte, re.IGNORECASE)
-    if match:
-        return match.group(1).lower()
-    if "run.app" in texte.lower() and " " not in texte:
-        host = texte.lower().replace("https://", "").replace("http://", "").split("/")[0]
-        if host.endswith(".run.app"):
-            return host
+    texte = texte.strip().lower()
+    m = re.search(r"host=([a-z0-9\-]+\.run\.app)", texte)
+    if m: return m.group(1)
+    m = re.search(r"([a-z0-9\-]+\.[a-z0-9\-]+\.run\.app)", texte, re.IGNORECASE)
+    if m: return m.group(1).lower()
     return None
-
-def generer_config_xray(host: str) -> str:
-    config = {
-        "inbounds": [{"listen": "$SOCKS5_LISTEN_HOST","port": "$SOCKS5_LISTEN_PORT","protocol": "socks","settings": {"auth": "noauth","udp": True,"userLevel": 8}},{"listen": "$HTTP_LISTEN_HOST","port": "$HTTP_LISTEN_PORT","protocol": "http","settings": {"userLevel": 8}}],
-        "log": {"loglevel": "none"},
-        "outbounds": [{"mux": {"concurrency": 8,"enabled": "$MUX_ENABLED"},"protocol": "vless","settings": {"vnext": [{"address": IP,"port": PORT,"users": [{"encryption": "none","id": UUID,"flow": "","level": 8,"security": "chacha20-poly1305"}]}]},"streamSettings": {"network": "ws","security": "tls","tlsSettings": {"allowInsecure": True,"serverName": SNI},"wsSettings": {"headers": {"Host": host},"path": PATH}}}],
-        "policy": {"levels": {"8": {"connIdle": 300,"downlinkOnly": 1,"handshake": 4,"uplinkOnly": 1}},"system": {"statsOutboundUplink": False,"statsOutboundDownlink": False}},"stats": {}
-    }
-    return json.dumps(config, separators=(",", ":"))
-
-def generer_dark_file(host: str, name: str = REMARK) -> bytes:
-    inner = {
-        "InjectConfig": {"IsEncrypted": True,"EncryptedMode": aes_encrypt(b"DIRECT", KEY_192),"EncryptedProxyHost": aes_encrypt(b"localhost", KEY_192),"EncryptedProxyPort": aes_encrypt(b"8080", KEY_192),"EncryptedServerNameIndication": aes_encrypt(b"", KEY_192),"EncryptedPayload": aes_encrypt(b"[method] [host_port] [protocol][crlf]Host: [host][crlf]Service: SSH[crlf]Mode: Bypass[crlf][crlf]", KEY_192),"EncryptedDnsttDnsHost": aes_encrypt(b"1.1.1.1", KEY_192),"EncryptedDnsttDnsPort": aes_encrypt(b"53", KEY_192),"EncryptedDnsttServerName": aes_encrypt(b"", KEY_192),"EncryptedDnsttPubkey": aes_encrypt(b"", KEY_192)},
-        "SshConfig": {"IsEncrypted": True,"IsLocked": True,"EncryptedHost": aes_encrypt(b"", KEY_192),"EncryptedPort": aes_encrypt(b"80", KEY_192),"EncryptedUsername": aes_encrypt(b"", KEY_192),"EncryptedPassword": aes_encrypt(b"", KEY_192)},
-        "V2RayConfig": {"IsEncrypted": True,"IsInjectModeEnabled": False,"EncryptedConfig": aes_encrypt(generer_config_xray(host).encode("utf-8"), KEY_192)}
-    }
-    inner_packed = msgpack.packb(inner, use_bin_type=True)
-    encrypted_inner = aes_encrypt(inner_packed, KEY_192)
-    outer_msgpack = {"LockedAppConfig": {"VersionCode": 0,"VersionName": "","Message": "","ConnectedMessage": "","Password": "","ExpiredAtTimestamp": 0,"HardwareIdList": [],"TunnelType": "VLESS","IsSshLocked": False},"EncryptedLockedConfig": encrypted_inner}
-    outer_packed = msgpack.packb(outer_msgpack, use_bin_type=True)
-    encrypted_outer = aes_encrypt(outer_packed, KEY_256)
-    final = {"type": "VLESS","name": name,"encryptedLockedConfig": base64.urlsafe_b64encode(encrypted_outer).decode("utf-8").rstrip("=")}
-    payload = base64.b64encode(json.dumps(final, separators=(",", ":")).encode("utf-8")).decode("utf-8")
-    return f"darktunnel://{payload}".encode("utf-8")
 
 def generer_lien_vless(host: str) -> str:
     path_encoded = PATH.replace("/", "%2F")
     return f"vless://{UUID}@{IP}:{PORT}?encryption=none&security=tls&sni={SNI}&type=ws&host={host}&path={path_encoded}#{REMARK}"
 
+# ======== MESSAGE /START BEAU ========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 *KCORP DarkTunnel Bot*\n\nEnvoie le lien Cloud Run avec `.run.app`", parse_mode="Markdown")
+    kb = [[InlineKeyboardButton("📞 Contact DEV", url="https://t.me/metajeady")]]
+    text = (
+        "🚀 *KCORP VLESS GENERATOR* 🚀\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👋 Salut ! Bienvenue sur le bot officiel *KCORP-TECH*\n\n"
+        "⚙️ *Fonction :*\n"
+        "Je convertis ton host Cloud Run `.run.app` en lien VLESS ultra-rapide.\n\n"
+        "📝 *Utilisation :*\n"
+        "1️⃣ Envoie ton host : `xxxx-xxxx.run.app`\n"
+        "2️⃣ Reçois ton lien VLESS dans un cadre prêt à copier\n"
+        "3️⃣ Colle dans V2rayNG / Xray\n\n"
+        "🔒 _100% Gratuit | Rapide | Stable_\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👇 *Envoie ton host pour commencer*"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
 
+# ======== TRAITEMENT VLESS ========
 async def traiter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     host = extraire_host(update.message.text or "")
     if not host:
-        await update.message.reply_text("❌ Pas de host `.run.app` trouvé")
+        await update.message.reply_text("❌ Host `.run.app` non trouvé\n\nEx: `xxxx.run.app`", parse_mode="Markdown")
         return
-    lien = generer_lien_vless(host)
-    dark_bytes = generer_dark_file(host)
-    filename = f"KCORP-{host.split('.')[0]}.dark"
-    await update.message.reply_text(f"✅ Host: `{host}`\n\n`{lien}`", parse_mode="Markdown")
-    await update.message.reply_document(document=InputFile(BytesIO(dark_bytes), filename=filename), caption=f"Host: `{host}`", parse_mode="Markdown")
 
-# --- ICI C'EST LE FIX QUE JE T'AI DONNÉ ---
+    lien = generer_lien_vless(host)
+    kb = [[InlineKeyboardButton("📞 Contact DEV", url="https://t.me/metajeady")]]
+
+    text = (
+        f"✅ *Host validé :* `{host}`\n\n"
+        f"```\n{lien}\n```\n\n"
+        "⚠️ *NB :* RASSUREZ-VOUS D'AVOIR UTILISÉ LE DORKER DE KCORP TECH\n"
+        "Si t'as pas encore de dorker, contact DEV 👇"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
 async def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, traiter))
     await app.initialize()
     await app.start()
-    print("🚀 Bot KCORP démarré...")
+    print("🚀 KCORP Bot démarré...")
     await app.updater.start_polling(drop_pending_updates=True)
     await asyncio.Event().wait()
 
